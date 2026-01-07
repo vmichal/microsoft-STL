@@ -45,6 +45,10 @@ template <class _KeyIter, class _MappedIter, class _MappedConvIter>
 concept _Can_unwrap_pairing_iterator =
     !conjunction_v<is_same<_Unwrapped_t<_KeyIter>, _KeyIter>, is_same<_Unwrapped_t<_MappedIter>, _MappedIter>>;
 
+template <class _Container>
+concept _ReservableContainer =
+    requires(_Container& _Cont, const typename _Container::size_type _Count) { _Cont.reserve(_Count); };
+
 template <class _KeyIter, class _MappedIter, class _MappedConvIter>
 using _Unwrapped_pairing_iterator = _Pairing_iterator_provider<_Unwrapped_t<_KeyIter>, _Unwrapped_t<_MappedIter>,
     _Unwrapped_t<_MappedConvIter>>::_Iterator;
@@ -667,12 +671,12 @@ public:
 
     template <_Container_compatible_range<value_type> _Rng>
     void insert_range(_Rng&& _Range) {
-        _Insert_range<true>(_RANGES begin(_Range), _RANGES end(_Range));
+        _Insert_range<true>(_STD forward<_Rng>(_Range));
     }
 
     template <_Container_compatible_range<value_type> _Rng>
     void insert_range(_Sorted_t, _Rng&& _Range) {
-        _Insert_range<false>(_RANGES begin(_Range), _RANGES end(_Range));
+        _Insert_range<false>(_STD forward<_Rng>(_Range));
     }
 
     void insert(const initializer_list<value_type> _Ilist) {
@@ -1108,7 +1112,56 @@ private:
 
     template <bool _NeedSorting, class _InputIterator, class _Sentinel>
     void _Insert_range(_InputIterator _First, const _Sentinel _Last) {
+        if (_First == _Last) {
+            return;
+        }
+
         _Clear_guard _Guard{this};
+        if constexpr (forward_iterator<_InputIterator>
+                      && (_ReservableContainer<key_container_type> || _ReservableContainer<mapped_container_type>) ) {
+
+            // Preallocate storage in containers when we can calculate the size of range
+            const auto _NewLength = size() + static_cast<size_type>(_RANGES distance(_First, _Last));
+
+            if constexpr (_ReservableContainer<key_container_type>) {
+                _Data.keys.reserve(_NewLength);
+            }
+            if constexpr (_ReservableContainer<mapped_container_type>) {
+                _Data.values.reserve(_NewLength);
+            }
+        }
+
+        _Insert_range_no_reserve<_NeedSorting>(_First, _Last);
+        _Guard._Target = nullptr;
+    }
+
+    template <bool _NeedSorting, _Container_compatible_range<value_type> _Rng>
+    void _Insert_range(_Rng&& _Range) {
+        if (_RANGES empty(_Range)) {
+            return;
+        }
+
+        _Clear_guard _Guard{this};
+        if constexpr ((_RANGES forward_range<_Rng> || _RANGES sized_range<_Rng>)
+                      && (_ReservableContainer<key_container_type> || _ReservableContainer<mapped_container_type>) ) {
+
+            // Preallocate storage in containers when we can calculate the size of range
+            const auto _NewLength = size() + static_cast<size_type>(_RANGES distance(_Range));
+
+            if constexpr (_ReservableContainer<key_container_type>) {
+                _Data.keys.reserve(_NewLength);
+            }
+            if constexpr (_ReservableContainer<mapped_container_type>) {
+                _Data.values.reserve(_NewLength);
+            }
+        }
+
+        _Insert_range_no_reserve<_NeedSorting>(_RANGES begin(_Range), _RANGES end(_Range));
+        _Guard._Target = nullptr;
+    }
+
+    template <bool _NeedSorting, class _InputIterator, class _Sentinel>
+    void _Insert_range_no_reserve(_InputIterator _First, const _Sentinel _Last) {
 
         const auto _Old_distance = static_cast<difference_type>(size());
 
@@ -1146,8 +1199,6 @@ private:
 
         _Erase_dupes_if_not_multi();
         _STL_INTERNAL_CHECK(_Is_sorted_and_unique());
-
-        _Guard._Target = nullptr;
     }
 
     template <class _KeyTy>
